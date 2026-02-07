@@ -86,7 +86,7 @@ export async function fetchProfile(
 }
 
 /**
- * Parse Wikitext to HTML using Wikimedia's Parse API
+ * Parse Wikitext to HTML using local API route (avoids CORS issues)
  */
 export async function parseWikitext(
   text: string,
@@ -94,34 +94,63 @@ export async function parseWikitext(
   signal?: AbortSignal
 ): Promise<ParseResult> {
   try {
-    const baseUrl = getBaseUrl(domain);
-    
-    const formData = new URLSearchParams({
-      action: 'parse',
-      text: text,
-      prop: 'text',
-      disablelimitreport: '1',
-      format: 'json',
-      origin: '*',
-      contentmodel: 'wikitext',
-    });
-
-    const response = await axios.post(baseUrl, formData.toString(), {
+    const response = await fetch('/api/parse', {
+      method: 'POST',
       headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'Api-User-Agent': USER_AGENT,
+        'Content-Type': 'application/json',
       },
+      body: JSON.stringify({ text, domain }),
       signal,
     });
 
-    const html = response.data.parse?.text?.['*'];
-    if (!html) {
-      return { success: false, error: 'Failed to parse wikitext' };
+    const data = await response.json();
+    
+    if (!data.success) {
+      return { success: false, error: data.error || 'Failed to parse wikitext' };
     }
 
-    return { success: true, html };
+    return { success: true, html: data.html };
   } catch (error) {
-    if (axios.isCancel(error)) {
+    if (error instanceof Error && error.name === 'AbortError') {
+      return { success: false, error: 'Request cancelled' };
+    }
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    return { success: false, error: message };
+  }
+}
+
+export interface ConvertResult {
+  success: boolean;
+  wikitext?: string;
+  error?: string;
+}
+
+/**
+ * Convert edited HTML back to Wikitext
+ */
+export async function convertHtmlToWikitext(
+  html: string,
+  signal?: AbortSignal
+): Promise<ConvertResult> {
+  try {
+    const response = await fetch('/api/convert', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ html }),
+      signal,
+    });
+
+    const data = await response.json();
+    
+    if (!data.success) {
+      return { success: false, error: data.error || 'Failed to convert HTML' };
+    }
+
+    return { success: true, wikitext: data.wikitext };
+  } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') {
       return { success: false, error: 'Request cancelled' };
     }
     const message = error instanceof Error ? error.message : 'Unknown error';

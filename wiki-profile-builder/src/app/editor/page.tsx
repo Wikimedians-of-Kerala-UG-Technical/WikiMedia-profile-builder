@@ -4,8 +4,8 @@ import { useEffect, useCallback, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import DOMPurify from 'dompurify';
-import { Code, Eye, ArrowLeft, ArrowRight, RefreshCw } from 'lucide-react';
-import { parseWikitext } from '@/services/wikiService';
+import { Code, Eye, ArrowLeft, ArrowRight, RefreshCw, RotateCcw, Pencil, Save, X } from 'lucide-react';
+import { parseWikitext, convertHtmlToWikitext } from '@/services/wikiService';
 import { useStore } from '@/store/useStore';
 import { Header } from '@/components/layout/Header';
 import { Button } from '@/components/ui/Button';
@@ -16,18 +16,32 @@ export default function EditorPage() {
   const router = useRouter();
   const abortControllerRef = useRef<AbortController | null>(null);
   const timeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const hasParsedRef = useRef(false);
+  const previewRef = useRef<HTMLDivElement | null>(null);
 
   const {
     username,
     selectedDomain,
     rawWikitext,
     setRawWikitext,
-    renderedHtml,
     setRenderedHtml,
   } = useStore();
 
-  const [isLoading, setIsLoading] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isConverting, setIsConverting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showCode, setShowCode] = useState(false);
+  const [localHtml, setLocalHtml] = useState<string>('');
+  const [editedHtml, setEditedHtml] = useState<string>('');
+  const [hasEdits, setHasEdits] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
+  const [savedHtml, setSavedHtml] = useState<string>('');
+  const [isClient, setIsClient] = useState(false);
+
+  // Set client flag after mount
+  useEffect(() => {
+    setIsClient(true);
+  }, []);
 
   // Redirect if no wikitext is loaded
   useEffect(() => {
@@ -36,12 +50,57 @@ export default function EditorPage() {
     }
   }, [rawWikitext, username, router]);
 
-  // Parse wikitext with 500ms debounce and AbortController
-  const parseWithDebounce = useCallback(
-    (text: string) => {
-      // Clear previous timeout
-      if (timeoutRef.current) {
-        clearTimeout(timeoutRef.current);
+  // Handle visual edits in the preview
+  const handlePreviewEdit = useCallback(() => {
+    if (previewRef.current) {
+      const html = previewRef.current.innerHTML;
+      setEditedHtml(html);
+    }
+  }, []);
+
+  // Start editing mode
+  const handleStartEditing = useCallback(() => {
+    setIsEditing(true);
+    // Set the editable content after the element is rendered
+    setTimeout(() => {
+      if (previewRef.current) {
+        previewRef.current.innerHTML = savedHtml || localHtml;
+        previewRef.current.focus();
+        // Place cursor at the end
+        const selection = window.getSelection();
+        const range = document.createRange();
+        range.selectNodeContents(previewRef.current);
+        range.collapse(false);
+        selection?.removeAllRanges();
+        selection?.addRange(range);
+      }
+    }, 0);
+  }, [localHtml, savedHtml]);
+
+  // Save changes from editing
+  const handleSaveChanges = useCallback(() => {
+    if (previewRef.current) {
+      const html = previewRef.current.innerHTML;
+      setSavedHtml(html);
+      setEditedHtml(html);
+      setHasEdits(true);
+    }
+    setIsEditing(false);
+  }, []);
+
+  // Cancel editing and revert
+  const handleCancelEditing = useCallback(() => {
+    setIsEditing(false);
+    setEditedHtml('');
+    // Changes are discarded - savedHtml retains the last saved state
+  }, []);
+
+  // Parse wikitext function
+  const parseNow = useCallback(
+    async (text: string) => {
+      if (!text) {
+        setIsLoading(false);
+        return;
       }
 
       // Abort previous request
@@ -49,48 +108,67 @@ export default function EditorPage() {
         abortControllerRef.current.abort();
       }
 
-      // Set loading state
+      // Create new abort controller
+      abortControllerRef.current = new AbortController();
+
       setIsLoading(true);
       setError(null);
 
-      // Create new timeout
-      timeoutRef.current = setTimeout(async () => {
-        // Create new abort controller
-        abortControllerRef.current = new AbortController();
+      try {
+        const result = await parseWikitext(
+          text,
+          selectedDomain,
+          abortControllerRef.current.signal
+        );
 
-        try {
-          const result = await parseWikitext(
-            text,
-            selectedDomain,
-            abortControllerRef.current.signal
-          );
-
-          if (result.success && result.html) {
-            // Sanitize HTML with DOMPurify before rendering
-            const sanitizedHtml = DOMPurify.sanitize(result.html, {
-              ADD_TAGS: ['iframe'],
-              ADD_ATTR: ['allow', 'allowfullscreen', 'frameborder', 'scrolling'],
-            });
-            setRenderedHtml(sanitizedHtml);
-          } else if (result.error && result.error !== 'Request cancelled') {
-            setError(result.error);
-          }
-        } catch (err) {
-          if (err instanceof Error && err.name !== 'AbortError') {
-            setError('Failed to parse wikitext');
-          }
-        } finally {
-          setIsLoading(false);
+        if (result.success && result.html) {
+          // Sanitize HTML with DOMPurify before rendering
+          const sanitizedHtml = DOMPurify.sanitize(result.html, {
+            ADD_TAGS: ['iframe'],
+            ADD_ATTR: ['allow', 'allowfullscreen', 'frameborder', 'scrolling'],
+          });
+          setLocalHtml(sanitizedHtml);
+          setRenderedHtml(sanitizedHtml);
+          setError(null);
+        } else if (result.error && result.error !== 'Request cancelled') {
+          setError(result.error);
         }
-      }, 500);
+      } catch (err) {
+        if (err instanceof Error && err.name !== 'AbortError') {
+          setError('Failed to parse wikitext');
+        }
+      } finally {
+        setIsLoading(false);
+      }
     },
     [selectedDomain, setRenderedHtml]
   );
 
-  // Initial parse on mount
+  // Parse wikitext with 500ms debounce
+  const parseWithDebounce = useCallback(
+    (text: string) => {
+      // Clear previous timeout
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current);
+      }
+
+      setIsLoading(true);
+
+      // Create new timeout
+      timeoutRef.current = setTimeout(() => {
+        parseNow(text);
+      }, 500);
+    },
+    [parseNow]
+  );
+
+  // Initial parse on mount - run once when component mounts and client is ready
   useEffect(() => {
-    if (rawWikitext) {
-      parseWithDebounce(rawWikitext);
+    if (isClient && rawWikitext && !hasParsedRef.current) {
+      hasParsedRef.current = true;
+      parseNow(rawWikitext);
+    } else if (!rawWikitext) {
+      setIsLoading(false);
     }
     
     // Cleanup on unmount
@@ -102,7 +180,7 @@ export default function EditorPage() {
         abortControllerRef.current.abort();
       }
     };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [isClient, rawWikitext, parseNow]);
 
   const handleWikitextChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const newText = e.target.value;
@@ -110,8 +188,29 @@ export default function EditorPage() {
     parseWithDebounce(newText);
   };
 
-  const handleGenerateCode = () => {
+  const handleGenerateCode = async () => {
+    if (hasEdits && savedHtml) {
+      // Convert saved HTML back to wikitext
+      setIsConverting(true);
+      try {
+        const result = await convertHtmlToWikitext(savedHtml);
+        if (result.wikitext) {
+          setRawWikitext(result.wikitext);
+        }
+      } catch (err) {
+        console.error('Conversion error:', err);
+        // Continue with original wikitext if conversion fails
+      } finally {
+        setIsConverting(false);
+      }
+    }
     router.push('/generator');
+  };
+
+  const handleRefresh = () => {
+    if (rawWikitext) {
+      parseNow(rawWikitext);
+    }
   };
 
   return (
@@ -133,13 +232,38 @@ export default function EditorPage() {
                 <span className="font-medium">{selectedDomain}</span>
               </div>
             </div>
-            <Button
-              onClick={handleGenerateCode}
-              leftIcon={<Code className="w-4 h-4" />}
-              rightIcon={<ArrowRight className="w-4 h-4" />}
-            >
-              Generate Code
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setShowCode(!showCode)}
+                leftIcon={showCode ? <Eye className="w-4 h-4" /> : <Code className="w-4 h-4" />}
+              >
+                {showCode ? 'Hide Code' : 'Show Code'}
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleRefresh}
+                disabled={isLoading}
+                leftIcon={<RotateCcw className="w-4 h-4" />}
+              >
+                Refresh
+              </Button>
+              {hasEdits && (
+                <span className="px-2 py-1 text-xs bg-amber-100 text-amber-700 rounded-full">
+                  Unsaved changes
+                </span>
+              )}
+              <Button
+                onClick={handleGenerateCode}
+                disabled={isConverting}
+                leftIcon={<Code className="w-4 h-4" />}
+                rightIcon={<ArrowRight className="w-4 h-4" />}
+              >
+                {isConverting ? 'Converting...' : 'Generate Code'}
+              </Button>
+            </div>
           </div>
         </div>
 
@@ -152,96 +276,177 @@ export default function EditorPage() {
           </div>
         )}
 
-        {/* Split-screen Editor */}
+        {/* Main Content */}
         <div className="flex-1 flex flex-col lg:flex-row">
-          {/* Left: Wikitext Editor */}
-          <div className="flex-1 flex flex-col border-r border-gray-200">
-            <div className="bg-gray-100 px-4 py-2 border-b border-gray-200 flex items-center gap-2">
-              <Code className="w-4 h-4 text-gray-600" />
-              <span className="text-sm font-medium text-gray-700">Wikitext Editor</span>
-            </div>
-            <textarea
-              value={rawWikitext}
-              onChange={handleWikitextChange}
-              className="flex-1 w-full p-4 font-mono text-sm resize-none focus:outline-none bg-white"
-              placeholder="Enter your Wikitext here..."
-              spellCheck={false}
-            />
-          </div>
-
-          {/* Right: Live Preview */}
-          <div className="flex-1 flex flex-col bg-white">
+          {/* Left: Live Preview (Primary) */}
+          <div className={`flex-1 flex flex-col bg-white ${showCode ? 'lg:w-1/2' : 'w-full'}`}>
             <div className="bg-gray-100 px-4 py-2 border-b border-gray-200 flex items-center justify-between">
               <div className="flex items-center gap-2">
-                <Eye className="w-4 h-4 text-gray-600" />
-                <span className="text-sm font-medium text-gray-700">Live Preview</span>
+                <Eye className="w-4 h-4 text-[#0057B7]" />
+                <span className="text-sm font-medium text-gray-700">Visual Editor</span>
+                {isEditing && (
+                  <span className="px-2 py-0.5 text-xs bg-blue-100 text-blue-700 rounded-full">
+                    Editing
+                  </span>
+                )}
               </div>
-              {isLoading && (
-                <div className="flex items-center gap-2 text-sm text-gray-500">
-                  <RefreshCw className="w-4 h-4 animate-spin" />
-                  Rendering...
-                </div>
-              )}
+              <div className="flex items-center gap-2">
+                {isLoading && (
+                  <div className="flex items-center gap-2 text-sm text-gray-500">
+                    <RefreshCw className="w-4 h-4 animate-spin" />
+                    Rendering...
+                  </div>
+                )}
+                {!isEditing && localHtml && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={handleStartEditing}
+                    leftIcon={<Pencil className="w-4 h-4" />}
+                  >
+                    Edit Preview
+                  </Button>
+                )}
+                {isEditing && (
+                  <>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={handleCancelEditing}
+                      leftIcon={<X className="w-4 h-4" />}
+                    >
+                      Cancel
+                    </Button>
+                    <Button
+                      size="sm"
+                      onClick={handleSaveChanges}
+                      leftIcon={<Save className="w-4 h-4" />}
+                    >
+                      Save Changes
+                    </Button>
+                  </>
+                )}
+              </div>
             </div>
-            <div className="flex-1 overflow-auto p-4">
-              {isLoading && !renderedHtml ? (
-                <div className="flex items-center justify-center h-full">
+            <div className="flex-1 overflow-auto p-6">
+              {isLoading && !localHtml ? (
+                <div className="flex items-center justify-center h-full min-h-[200px]">
                   <Spinner size="lg" />
                 </div>
-              ) : renderedHtml ? (
-                <div
-                  className="wiki-preview prose prose-sm max-w-none"
-                  dangerouslySetInnerHTML={{ __html: renderedHtml }}
-                />
+              ) : localHtml ? (
+                isEditing ? (
+                  <div
+                    ref={previewRef}
+                    className="wiki-preview prose prose-sm max-w-none min-h-[200px] rounded focus:outline-none ring-2 ring-[#0057B7] ring-offset-2 cursor-text"
+                    contentEditable
+                    suppressContentEditableWarning
+                    onInput={handlePreviewEdit}
+                  />
+                ) : (
+                  <div
+                    className="wiki-preview prose prose-sm max-w-none min-h-[200px] rounded cursor-default"
+                    dangerouslySetInnerHTML={{ __html: savedHtml || localHtml }}
+                  />
+                )
               ) : (
                 <div className="text-gray-400 text-center py-8">
-                  Start typing to see the preview...
+                  {rawWikitext ? 'Loading preview...' : 'No content to preview'}
                 </div>
               )}
             </div>
           </div>
+
+          {/* Right: Wikitext Code Editor (Toggle) */}
+          {showCode && (
+            <div className="flex-1 flex flex-col border-l border-gray-200 lg:w-1/2">
+              <div className="bg-gray-800 px-4 py-2 border-b border-gray-700 flex items-center gap-2">
+                <Code className="w-4 h-4 text-green-400" />
+                <span className="text-sm font-medium text-gray-200">Wikitext Code</span>
+                <span className="text-xs text-gray-500">(Read-only)</span>
+              </div>
+              <textarea
+                value={rawWikitext}
+                readOnly
+                className="flex-1 w-full p-4 font-mono text-sm resize-none focus:outline-none bg-gray-900 text-green-400 cursor-default"
+                placeholder="Code will be generated from visual edits..."
+              />
+            </div>
+          )}
         </div>
       </div>
 
       {/* Wiki Preview Styles */}
       <style jsx global>{`
         .wiki-preview {
-          font-family: sans-serif;
+          font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
           line-height: 1.6;
+          color: #202122;
+        }
+        .wiki-preview[contenteditable="true"]:empty:before {
+          content: "Start editing here...";
+          color: #a2a9b1;
         }
         .wiki-preview a {
-          color: #0057B7;
+          color: #0645ad;
         }
         .wiki-preview a:hover {
           text-decoration: underline;
         }
+        .wiki-preview a.new {
+          color: #d33;
+        }
         .wiki-preview h1,
         .wiki-preview h2,
         .wiki-preview h3 {
-          border-bottom: 1px solid #eee;
+          border-bottom: 1px solid #a2a9b1;
           padding-bottom: 0.3em;
+          margin-top: 1em;
         }
         .wiki-preview table {
           border-collapse: collapse;
+          margin: 1em 0;
         }
         .wiki-preview th,
         .wiki-preview td {
-          border: 1px solid #ddd;
+          border: 1px solid #a2a9b1;
           padding: 0.5em;
         }
+        .wiki-preview th {
+          background: #eaecf0;
+        }
         .wiki-preview pre {
-          background: #f5f5f5;
+          background: #f8f9fa;
           padding: 1em;
           overflow-x: auto;
+          border: 1px solid #eaecf0;
         }
         .wiki-preview code {
-          background: #f5f5f5;
+          background: #f8f9fa;
           padding: 0.2em 0.4em;
-          border-radius: 3px;
+          border-radius: 2px;
+          font-family: monospace;
         }
         .wiki-preview img {
           max-width: 100%;
           height: auto;
+        }
+        .wiki-preview .mw-parser-output {
+          line-height: 1.6;
+        }
+        .wiki-preview .babel {
+          float: right;
+          clear: right;
+          margin: 0 0 1em 1em;
+        }
+        .wiki-preview .userbox {
+          margin: 0.5em;
+        }
+        .wiki-preview .infobox {
+          border: 1px solid #a2a9b1;
+          background: #f8f9fa;
+          padding: 0.5em;
+          margin: 0 0 1em 1em;
+          float: right;
         }
       `}</style>
     </div>
