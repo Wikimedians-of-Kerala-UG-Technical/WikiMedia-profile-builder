@@ -4,14 +4,14 @@ import { useEffect, useCallback, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import DOMPurify from 'dompurify';
-import { Code, Eye, ArrowLeft, RefreshCw, RotateCcw, Pencil, Save, X, Wand2, Copy, Check } from 'lucide-react';
+import { Code, Eye, ArrowLeft, RefreshCw, RotateCcw, Pencil, Save, X, Copy, Check } from 'lucide-react';
 import { parseWikitext, convertHtmlToWikitext } from '@/services/wikiService';
 import { useStore } from '@/store/useStore';
 import { Header } from '@/components/layout/Header';
 import { Button } from '@/components/ui/Button';
 import { Spinner } from '@/components/ui/Spinner';
 import { ErrorBanner } from '@/components/ui/ErrorBanner';
-import { AIEditModal } from '@/components/editor/AIEditModal';
+
 
 export default function EditorPage() {
   const router = useRouter();
@@ -38,9 +38,6 @@ export default function EditorPage() {
   const [hasEdits, setHasEdits] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [savedHtml, setSavedHtml] = useState<string>('');
-  const [isAIModalOpen, setIsAIModalOpen] = useState(false);
-  const [isAILoading, setIsAILoading] = useState(false);
-  const [selectedText, setSelectedText] = useState<string>('');
   const [originalWikitext, setOriginalWikitext] = useState<string>('');
   const [isCopied, setIsCopied] = useState(false);
 
@@ -110,15 +107,6 @@ export default function EditorPage() {
     // Changes are discarded - savedHtml retains the last saved state
   }, []);
 
-  // Open AI edit modal
-  const handleOpenAIEdit = useCallback(() => {
-    // Get selected text from the code editor or preview
-    const selection = window.getSelection();
-    const selected = selection?.toString() || '';
-    setSelectedText(selected);
-    setIsAIModalOpen(true);
-  }, []);
-
   // Parse wikitext function
   const parseNow = useCallback(
     async (text: string) => {
@@ -184,50 +172,6 @@ export default function EditorPage() {
       }, 500);
     },
     [parseNow]
-  );
-
-  // Apply AI edit
-  const handleApplyAIEdit = useCallback(
-    async (instruction: string, selected: string) => {
-      if (!rawWikitext) return;
-
-      setIsAILoading(true);
-      setError(null);
-
-      try {
-        const response = await fetch('/api/ai-edit', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            originalWikitext: rawWikitext,
-            selectedText: selected,
-            instruction: instruction,
-          }),
-        });
-
-        const data = await response.json();
-
-        if (!response.ok) {
-          throw new Error(data.error || 'Failed to apply AI edit');
-        }
-
-        if (data.wikitext) {
-          setRawWikitext(data.wikitext);
-          setHasEdits(true);
-          // Re-parse the wikitext to update the preview
-          parseNow(data.wikitext);
-          setIsAIModalOpen(false);
-        }
-      } catch (err) {
-        console.error('AI edit error:', err);
-        setError(err instanceof Error ? err.message : 'Failed to apply AI edit');
-      } finally {
-        setIsAILoading(false);
-      }
-    },
-    [rawWikitext, setRawWikitext, parseNow]
   );
 
   // Initial parse on mount - run once when store is hydrated and wikitext exists
@@ -329,15 +273,6 @@ export default function EditorPage() {
                 leftIcon={<RotateCcw className="w-4 h-4" />}
               >
                 Refresh
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleOpenAIEdit}
-                disabled={isAILoading}
-                leftIcon={<Wand2 className="w-4 h-4" />}
-              >
-                AI Edit
               </Button>
               {isSyncing && (
                 <span className="px-2 py-1 text-xs bg-blue-100 text-blue-700 rounded-full flex items-center gap-1">
@@ -464,7 +399,7 @@ export default function EditorPage() {
                     </span>
                   )}
                 </div>
-                <span className="text-xs text-gray-500">Edit code directly or use AI</span>
+                <span className="text-xs text-gray-500">Edit code directly</span>
               </div>
               <textarea
                 value={rawWikitext}
@@ -552,14 +487,6 @@ export default function EditorPage() {
         }
       `}</style>
 
-      {/* AI Edit Modal */}
-      <AIEditModal
-        isOpen={isAIModalOpen}
-        onClose={() => setIsAIModalOpen(false)}
-        onApply={handleApplyAIEdit}
-        selectedText={selectedText}
-        isLoading={isAILoading}
-      />
     </div>
   );
 }
