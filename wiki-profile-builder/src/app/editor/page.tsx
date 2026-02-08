@@ -4,13 +4,14 @@ import { useEffect, useCallback, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import DOMPurify from 'dompurify';
-import { Code, Eye, ArrowLeft, ArrowRight, RefreshCw, RotateCcw, Pencil, Save, X } from 'lucide-react';
+import { Code, Eye, ArrowLeft, RefreshCw, RotateCcw, Pencil, Save, X, Wand2, Copy, Check } from 'lucide-react';
 import { parseWikitext, convertHtmlToWikitext } from '@/services/wikiService';
 import { useStore } from '@/store/useStore';
 import { Header } from '@/components/layout/Header';
 import { Button } from '@/components/ui/Button';
 import { Spinner } from '@/components/ui/Spinner';
 import { ErrorBanner } from '@/components/ui/ErrorBanner';
+import { AIEditModal } from '@/components/editor/AIEditModal';
 
 export default function EditorPage() {
   const router = useRouter();
@@ -25,30 +26,30 @@ export default function EditorPage() {
     rawWikitext,
     setRawWikitext,
     setRenderedHtml,
+    _hasHydrated,
   } = useStore();
 
   const [isLoading, setIsLoading] = useState(true);
-  const [isConverting, setIsConverting] = useState(false);
+  const [isSyncing, setIsSyncing] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [showCode, setShowCode] = useState(false);
+  const [showCode, setShowCode] = useState(true);
   const [localHtml, setLocalHtml] = useState<string>('');
   const [editedHtml, setEditedHtml] = useState<string>('');
   const [hasEdits, setHasEdits] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [savedHtml, setSavedHtml] = useState<string>('');
-  const [isClient, setIsClient] = useState(false);
+  const [isAIModalOpen, setIsAIModalOpen] = useState(false);
+  const [isAILoading, setIsAILoading] = useState(false);
+  const [selectedText, setSelectedText] = useState<string>('');
+  const [originalWikitext, setOriginalWikitext] = useState<string>('');
+  const [isCopied, setIsCopied] = useState(false);
 
-  // Set client flag after mount
+  // Redirect if no wikitext is loaded (after hydration)
   useEffect(() => {
-    setIsClient(true);
-  }, []);
-
-  // Redirect if no wikitext is loaded
-  useEffect(() => {
-    if (!rawWikitext && !username) {
+    if (_hasHydrated && !rawWikitext && !username) {
       router.push('/');
     }
-  }, [rawWikitext, username, router]);
+  }, [_hasHydrated, rawWikitext, username, router]);
 
   // Handle visual edits in the preview
   const handlePreviewEdit = useCallback(() => {
@@ -77,22 +78,45 @@ export default function EditorPage() {
     }, 0);
   }, [localHtml, savedHtml]);
 
-  // Save changes from editing
-  const handleSaveChanges = useCallback(() => {
+  // Save changes from editing and sync to wikitext
+  const handleSaveChanges = useCallback(async () => {
     if (previewRef.current) {
       const html = previewRef.current.innerHTML;
       setSavedHtml(html);
       setEditedHtml(html);
       setHasEdits(true);
+      
+      // Auto-sync HTML changes to wikitext
+      setIsSyncing(true);
+      try {
+        const result = await convertHtmlToWikitext(html);
+        if (result.wikitext) {
+          setRawWikitext(result.wikitext);
+        }
+      } catch (err) {
+        console.error('Sync error:', err);
+        setError('Failed to sync changes to code. Your visual changes are saved.');
+      } finally {
+        setIsSyncing(false);
+      }
     }
     setIsEditing(false);
-  }, []);
+  }, [setRawWikitext]);
 
   // Cancel editing and revert
   const handleCancelEditing = useCallback(() => {
     setIsEditing(false);
     setEditedHtml('');
     // Changes are discarded - savedHtml retains the last saved state
+  }, []);
+
+  // Open AI edit modal
+  const handleOpenAIEdit = useCallback(() => {
+    // Get selected text from the code editor or preview
+    const selection = window.getSelection();
+    const selected = selection?.toString() || '';
+    setSelectedText(selected);
+    setIsAIModalOpen(true);
   }, []);
 
   // Parse wikitext function
@@ -162,12 +186,60 @@ export default function EditorPage() {
     [parseNow]
   );
 
-  // Initial parse on mount - run once when component mounts and client is ready
+  // Apply AI edit
+  const handleApplyAIEdit = useCallback(
+    async (instruction: string, selected: string) => {
+      if (!rawWikitext) return;
+
+      setIsAILoading(true);
+      setError(null);
+
+      try {
+        const response = await fetch('/api/ai-edit', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            originalWikitext: rawWikitext,
+            selectedText: selected,
+            instruction: instruction,
+          }),
+        });
+
+        const data = await response.json();
+
+        if (!response.ok) {
+          throw new Error(data.error || 'Failed to apply AI edit');
+        }
+
+        if (data.wikitext) {
+          setRawWikitext(data.wikitext);
+          setHasEdits(true);
+          // Re-parse the wikitext to update the preview
+          parseNow(data.wikitext);
+          setIsAIModalOpen(false);
+        }
+      } catch (err) {
+        console.error('AI edit error:', err);
+        setError(err instanceof Error ? err.message : 'Failed to apply AI edit');
+      } finally {
+        setIsAILoading(false);
+      }
+    },
+    [rawWikitext, setRawWikitext, parseNow]
+  );
+
+  // Initial parse on mount - run once when store is hydrated and wikitext exists
   useEffect(() => {
-    if (isClient && rawWikitext && !hasParsedRef.current) {
+    if (_hasHydrated && rawWikitext && !hasParsedRef.current) {
       hasParsedRef.current = true;
+      // Store original wikitext for change tracking
+      if (!originalWikitext) {
+        setOriginalWikitext(rawWikitext);
+      }
       parseNow(rawWikitext);
-    } else if (!rawWikitext) {
+    } else if (_hasHydrated && !rawWikitext) {
       setIsLoading(false);
     }
     
@@ -180,31 +252,24 @@ export default function EditorPage() {
         abortControllerRef.current.abort();
       }
     };
-  }, [isClient, rawWikitext, parseNow]);
+  }, [_hasHydrated, rawWikitext, parseNow, originalWikitext]);
 
   const handleWikitextChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const newText = e.target.value;
     setRawWikitext(newText);
+    setHasEdits(true);
     parseWithDebounce(newText);
   };
 
-  const handleGenerateCode = async () => {
-    if (hasEdits && savedHtml) {
-      // Convert saved HTML back to wikitext
-      setIsConverting(true);
-      try {
-        const result = await convertHtmlToWikitext(savedHtml);
-        if (result.wikitext) {
-          setRawWikitext(result.wikitext);
-        }
-      } catch (err) {
-        console.error('Conversion error:', err);
-        // Continue with original wikitext if conversion fails
-      } finally {
-        setIsConverting(false);
-      }
+  const handleCopyCode = async () => {
+    try {
+      await navigator.clipboard.writeText(rawWikitext);
+      setIsCopied(true);
+      setTimeout(() => setIsCopied(false), 2000);
+    } catch (err) {
+      console.error('Failed to copy:', err);
+      setError('Failed to copy code to clipboard');
     }
-    router.push('/generator');
   };
 
   const handleRefresh = () => {
@@ -212,6 +277,21 @@ export default function EditorPage() {
       parseNow(rawWikitext);
     }
   };
+
+  // Check if code has changed from original
+  const hasCodeChanges = originalWikitext && rawWikitext !== originalWikitext;
+
+  // Show loading while store is hydrating
+  if (!_hasHydrated) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex flex-col">
+        <Header />
+        <div className="flex-1 flex items-center justify-center">
+          <Spinner size="lg" />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-gray-50 flex flex-col">
@@ -250,18 +330,33 @@ export default function EditorPage() {
               >
                 Refresh
               </Button>
-              {hasEdits && (
-                <span className="px-2 py-1 text-xs bg-amber-100 text-amber-700 rounded-full">
-                  Unsaved changes
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleOpenAIEdit}
+                disabled={isAILoading}
+                leftIcon={<Wand2 className="w-4 h-4" />}
+              >
+                AI Edit
+              </Button>
+              {isSyncing && (
+                <span className="px-2 py-1 text-xs bg-blue-100 text-blue-700 rounded-full flex items-center gap-1">
+                  <RefreshCw className="w-3 h-3 animate-spin" />
+                  Syncing...
+                </span>
+              )}
+              {hasCodeChanges && !isSyncing && (
+                <span className="px-2 py-1 text-xs bg-green-100 text-green-700 rounded-full">
+                  Code modified
                 </span>
               )}
               <Button
-                onClick={handleGenerateCode}
-                disabled={isConverting}
-                leftIcon={<Code className="w-4 h-4" />}
-                rightIcon={<ArrowRight className="w-4 h-4" />}
+                variant="primary"
+                size="sm"
+                onClick={handleCopyCode}
+                leftIcon={isCopied ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
               >
-                {isConverting ? 'Converting...' : 'Generate Code'}
+                {isCopied ? 'Copied!' : 'Copy Code'}
               </Button>
             </div>
           </div>
@@ -359,16 +454,23 @@ export default function EditorPage() {
           {/* Right: Wikitext Code Editor (Toggle) */}
           {showCode && (
             <div className="flex-1 flex flex-col border-l border-gray-200 lg:w-1/2">
-              <div className="bg-gray-800 px-4 py-2 border-b border-gray-700 flex items-center gap-2">
-                <Code className="w-4 h-4 text-green-400" />
-                <span className="text-sm font-medium text-gray-200">Wikitext Code</span>
-                <span className="text-xs text-gray-500">(Read-only)</span>
+              <div className="bg-gray-800 px-4 py-2 border-b border-gray-700 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Code className="w-4 h-4 text-green-400" />
+                  <span className="text-sm font-medium text-gray-200">Wikitext Code</span>
+                  {hasCodeChanges && (
+                    <span className="px-2 py-0.5 text-xs bg-green-600 text-white rounded-full">
+                      Modified
+                    </span>
+                  )}
+                </div>
+                <span className="text-xs text-gray-500">Edit code directly or use AI</span>
               </div>
               <textarea
                 value={rawWikitext}
-                readOnly
-                className="flex-1 w-full p-4 font-mono text-sm resize-none focus:outline-none bg-gray-900 text-green-400 cursor-default"
-                placeholder="Code will be generated from visual edits..."
+                onChange={handleWikitextChange}
+                className="flex-1 w-full p-4 font-mono text-sm resize-none focus:outline-none bg-gray-900 text-green-400 focus:ring-2 focus:ring-green-500 focus:ring-inset"
+                placeholder="Wikitext code will appear here..."
               />
             </div>
           )}
@@ -449,6 +551,15 @@ export default function EditorPage() {
           float: right;
         }
       `}</style>
+
+      {/* AI Edit Modal */}
+      <AIEditModal
+        isOpen={isAIModalOpen}
+        onClose={() => setIsAIModalOpen(false)}
+        onApply={handleApplyAIEdit}
+        selectedText={selectedText}
+        isLoading={isAILoading}
+      />
     </div>
   );
 }

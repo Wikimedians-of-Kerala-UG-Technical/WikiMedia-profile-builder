@@ -25,6 +25,10 @@ interface WikiStore {
   error: string | null;
   setError: (error: string | null) => void;
 
+  // Hydration state
+  _hasHydrated: boolean;
+  setHasHydrated: (state: boolean) => void;
+
   // Reset
   reset: () => void;
 }
@@ -38,6 +42,7 @@ const initialState = {
   renderedHtml: '',
   isLoading: false,
   error: null,
+  _hasHydrated: false,
 };
 
 export const useStore = create<WikiStore>()(
@@ -59,6 +64,9 @@ export const useStore = create<WikiStore>()(
       setLoading: (isLoading) => set({ isLoading }),
       setError: (error) => set({ error }),
 
+      // Hydration
+      setHasHydrated: (_hasHydrated) => set({ _hasHydrated }),
+
       // Reset
       reset: () => set({ 
         username: '', 
@@ -74,6 +82,9 @@ export const useStore = create<WikiStore>()(
         selectedDomain: state.selectedDomain,
         rawWikitext: state.rawWikitext,
       }),
+      onRehydrateStorage: () => (state) => {
+        state?.setHasHydrated(true);
+      },
     }
   )
 );

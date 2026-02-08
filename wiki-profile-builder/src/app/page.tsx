@@ -2,7 +2,7 @@
 
 import { useState, useRef } from 'react';
 import { useRouter } from 'next/navigation';
-import { User, Globe, Download, RefreshCw } from 'lucide-react';
+import { User, Globe, Download, RefreshCw, Sparkles } from 'lucide-react';
 import { fetchProfile, WIKI_DOMAINS } from '@/services/wikiService';
 import { useStore } from '@/store/useStore';
 import { Header } from '@/components/layout/Header';
@@ -11,10 +11,14 @@ import { Input } from '@/components/ui/Input';
 import { Select } from '@/components/ui/Select';
 import { Card, CardContent, CardHeader } from '@/components/ui/Card';
 import { ErrorBanner } from '@/components/ui/ErrorBanner';
+import { BasicInfoForm } from '@/components/profile/BasicInfoForm';
+
+type TabType = 'fetch' | 'create';
 
 export default function HomePage() {
   const router = useRouter();
   const abortControllerRef = useRef<AbortController | null>(null);
+  const [activeTab, setActiveTab] = useState<TabType>('fetch');
   
   const {
     username,
@@ -90,13 +94,40 @@ export default function HomePage() {
       
       <main className="max-w-2xl mx-auto px-4 py-12">
         <div className="text-center mb-8">
-          <h1 className="text-3xl font-bold text-gray-900">Fetch Your Wiki Profile</h1>
+          <h1 className="text-3xl font-bold text-gray-900">Wiki Profile Builder</h1>
           <p className="text-gray-600 mt-2">
-            Enter your Wikimedia username to fetch and edit your user page
+            Fetch an existing profile or create a new one from scratch
           </p>
         </div>
 
-        <Card>
+        {/* Tab Navigation */}
+        <div className="flex mb-6 bg-gray-100 rounded-lg p-1">
+          <button
+            onClick={() => setActiveTab('fetch')}
+            className={`flex-1 flex items-center justify-center gap-2 py-2.5 px-4 rounded-md text-sm font-medium transition-all ${
+              activeTab === 'fetch'
+                ? 'bg-white text-[#0057B7] shadow-sm'
+                : 'text-gray-600 hover:text-gray-900'
+            }`}
+          >
+            <Download className="w-4 h-4" />
+            Fetch Existing Profile
+          </button>
+          <button
+            onClick={() => setActiveTab('create')}
+            className={`flex-1 flex items-center justify-center gap-2 py-2.5 px-4 rounded-md text-sm font-medium transition-all ${
+              activeTab === 'create'
+                ? 'bg-white text-[#0057B7] shadow-sm'
+                : 'text-gray-600 hover:text-gray-900'
+            }`}
+          >
+            <Sparkles className="w-4 h-4" />
+            Create New Profile
+          </button>
+        </div>
+
+        {activeTab === 'fetch' ? (
+          <Card>
           <CardHeader>
             <h2 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
               <Download className="w-5 h-5 text-[#0057B7]" />
@@ -138,14 +169,30 @@ export default function HomePage() {
             </Button>
           </CardContent>
         </Card>
+        ) : (
+          <BasicInfoForm />
+        )}
 
         <div className="mt-8 text-center text-sm text-gray-500">
-          <p>
-            This tool fetches your public user page from Wikimedia projects.
-          </p>
-          <p className="mt-1">
-            Supported projects: Meta-Wiki, Wikipedia, Commons, Wikidata, and more.
-          </p>
+          {activeTab === 'fetch' ? (
+            <>
+              <p>
+                This tool fetches your public user page from Wikimedia projects.
+              </p>
+              <p className="mt-1">
+                Supported projects: Meta-Wiki, Wikipedia, Commons, Wikidata, and more.
+              </p>
+            </>
+          ) : (
+            <>
+              <p>
+                Perfect for beginners! Fill in your details and we&apos;ll generate wiki markup.
+              </p>
+              <p className="mt-1">
+                You can customize the generated code in the editor.
+              </p>
+            </>
+          )}
         </div>
       </main>
     </div>
